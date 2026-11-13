@@ -3,7 +3,7 @@ local ADDON = ...
 GuildHawk = GuildHawk or {}
 local GH = GuildHawk
 
-BINDING_HEADER_GUILDHAWK = "GuildHawk"
+BINDING_HEADER_GUILDHAWK = "Guild Hawk"
 BINDING_NAME_GUILDHAWK_SEND = "Send next due recruitment post"
 
 local MAX_LEN = 255
@@ -37,7 +37,7 @@ function GH.InitDB()
 end
 
 function GH.Print(msg)
-  DEFAULT_CHAT_FRAME:AddMessage("|cffffd100GuildHawk:|r " .. tostring(msg))
+  DEFAULT_CHAT_FRAME:AddMessage("|cffffd100Guild Hawk:|r " .. tostring(msg))
 end
 
 ---------------------------------------------------------------------------

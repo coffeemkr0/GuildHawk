@@ -1,5 +1,6 @@
 ## Interface: 16001
-## Title: GuildHawk
+## Title: Guild Hawk
+## IconTexture: Interface\Icons\INV_Misc_Horn_01
 ## Notes: Guild recruitment timer. Timers mark posts as due; one click or keypress sends a randomly picked message.
 ## Author: You
 ## Version: 1.0.0

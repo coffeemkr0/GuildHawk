@@ -28,7 +28,7 @@ local function BuildReady()
   ready:SetScript("OnDragStart", function(self) self:StartMoving() end)
   ready:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
   ready:SetScript("OnClick", function() GH.Prompt() end)
-  ready:SetText("GuildHawk")
+  ready:SetText("Guild Hawk")
 
   local elapsed = 0
   ready:SetScript("OnUpdate", function(_, dt)
@@ -46,7 +46,7 @@ end
 function GH.UpdateUI()
   if not ready then return end
   if not GH.db.running then
-    ready:SetText("GuildHawk: stopped")
+    ready:SetText("Guild Hawk: stopped")
     ready:SetAlpha(0.6)
     return
   end
@@ -224,7 +224,7 @@ local function BuildConfig()
 
   local title = cfg:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
   title:SetPoint("TOP", 0, -14)
-  title:SetText("GuildHawk")
+  title:SetText("Guild Hawk")
 
   local close = CreateFrame("Button", nil, cfg, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", -4, -4)
@@ -351,7 +351,7 @@ local function BuildMinimapButton()
 
   b:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-    GameTooltip:AddLine("GuildHawk")
+    GameTooltip:AddLine("Guild Hawk")
     GameTooltip:AddLine("Click: open settings", 1, 1, 1)
     GameTooltip:AddLine("Drag: move this button", 1, 1, 1)
     GameTooltip:Show()
