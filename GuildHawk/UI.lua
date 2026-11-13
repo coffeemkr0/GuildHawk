@@ -27,19 +27,19 @@ local function BuildReady()
   ready:RegisterForDrag("RightButton")
   ready:SetScript("OnDragStart", function(self) self:StartMoving() end)
   ready:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
-  ready:SetScript("OnClick", function() GH.SendNext() end)
+  ready:SetScript("OnClick", function() GH.Prompt() end)
   ready:SetText("GuildHawk")
 
   local elapsed = 0
-  local wasDue = false
   ready:SetScript("OnUpdate", function(_, dt)
     elapsed = elapsed + dt
     if elapsed < 1 then return end
     elapsed = 0
+    if not GH.pending then
+      GH.Prompt()
+      if GH.pending then PlaySound(SOUNDKIT and SOUNDKIT.TELL_MESSAGE or 3081) end
+    end
     GH.UpdateUI()
-    local due = GH.db.running and GH.NextDue() ~= nil
-    if due and not wasDue then PlaySound(SOUNDKIT and SOUNDKIT.TELL_MESSAGE or 3081) end
-    wasDue = due
   end)
 end
 
@@ -50,9 +50,14 @@ function GH.UpdateUI()
     ready:SetAlpha(0.6)
     return
   end
+  if GH.pending then
+    ready:SetText("Review post: " .. GH.TargetLabel(GH.pending.target))
+    ready:SetAlpha(1)
+    return
+  end
   local t = GH.NextDue()
   if t then
-    ready:SetText("Send to " .. GH.TargetLabel(t))
+    ready:SetText("Review " .. GH.TargetLabel(t))
     ready:SetAlpha(1)
   else
     local now, soon = GetTime(), nil
@@ -66,6 +71,64 @@ function GH.UpdateUI()
     ready:SetAlpha(0.6)
   end
   if cfg and cfg:IsShown() then GH.RefreshConfig() end
+end
+
+---------------------------------------------------------------------------
+-- Preview prompt (message + channel + 5 buttons)
+---------------------------------------------------------------------------
+local prompt
+
+local function BuildPrompt()
+  prompt = CreateFrame("Frame", "GuildHawkPrompt", UIParent, "BackdropTemplate")
+  prompt:SetSize(420, 170)
+  prompt:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+  prompt:SetFrameStrata("DIALOG")
+  prompt:SetMovable(true)
+  prompt:EnableMouse(true)
+  prompt:RegisterForDrag("LeftButton")
+  prompt:SetScript("OnDragStart", prompt.StartMoving)
+  prompt:SetScript("OnDragStop", prompt.StopMovingOrSizing)
+  backdrop(prompt)
+  prompt:Hide()
+
+  prompt.title = prompt:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+  prompt.title:SetPoint("TOP", 0, -14)
+
+  prompt.msg = prompt:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  prompt.msg:SetPoint("TOPLEFT", 20, -42)
+  prompt.msg:SetWidth(380)
+  prompt.msg:SetJustifyH("LEFT")
+  prompt.msg:SetJustifyV("TOP")
+  prompt.msg:SetHeight(70)
+
+  local defs = {
+    { "Next",       function() GH.Next() end },
+    { "Okay",       function() GH.Approve() end },
+    { "Skip",       function() GH.Skip() end },
+    { "Cancel",     function() GH.CancelTarget() end },
+    { "Cancel All", function() GH.CancelAll() end },
+  }
+  local prev
+  for i, d in ipairs(defs) do
+    local b = CreateFrame("Button", nil, prompt, "UIPanelButtonTemplate")
+    b:SetSize(76, 24)
+    if prev then b:SetPoint("LEFT", prev, "RIGHT", 4, 0) else b:SetPoint("BOTTOMLEFT", 12, 16) end
+    b:SetText(d[1])
+    b:SetScript("OnClick", d[2])
+    prev = b
+  end
+end
+
+function GH.ShowPrompt()
+  local p = GH.pending
+  if not p or not prompt then return end
+  prompt.title:SetText("Post to " .. GH.TargetLabel(p.target) .. "?")
+  prompt.msg:SetText(p.msg)
+  prompt:Show()
+end
+
+function GH.HidePrompt()
+  if prompt then prompt:Hide() end
 end
 
 ---------------------------------------------------------------------------
@@ -234,7 +297,7 @@ local function BuildConfig()
   end)
 
   local sendNow = CreateFrame("Button", nil, cfg, "UIPanelButtonTemplate")
-  sendNow:SetSize(130, 22); sendNow:SetPoint("BOTTOMRIGHT", -20, 16); sendNow:SetText("Send next due")
+  sendNow:SetSize(130, 22); sendNow:SetPoint("BOTTOMRIGHT", -20, 16); sendNow:SetText("Review next due")
   sendNow:SetScript("OnClick", function() GH.SendNext() end)
 end
 
@@ -245,6 +308,7 @@ end
 
 function GH.BuildUI()
   BuildReady()
+  BuildPrompt()
   BuildConfig()
   GH.UpdateUI()
   GH.Print("Loaded. /gh to configure, /gh start to begin. Drag the button with right-click.")

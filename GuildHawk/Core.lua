@@ -128,29 +128,93 @@ function GH.TargetLabel(t)
   return t.kind:sub(1, 1) .. t.kind:sub(2):lower()
 end
 
--- Must be called from a hardware event (button click / keybind).
-function GH.SendNext()
-  if not GH.db.running then GH.Print("Stopped. Use /gh start."); return end
-  if UnitIsDeadOrGhost("player") then GH.Print("Dead; not sending."); return end
-  local t = GH.NextDue()
-  if not t then GH.Print("Nothing is due yet."); return end
-  if #GH.db.messages == 0 then GH.Print("No messages. Paste some in /gh."); return end
+---------------------------------------------------------------------------
+-- Preview prompt flow
+--   Prompt  : a target is due -> pick a message and show the preview
+--   Next    : pick another random message (also marked as used)
+--   Okay    : send it (runs from a click, so the protected send is allowed)
+--   Skip    : drop this post and restart that channel's timer
+--   Cancel  : stop the timer for this channel
+--   CancelAll: stop every channel's timer
+---------------------------------------------------------------------------
+GH.pending = nil
 
-  local chatType, channelId = t.kind, nil
-  if t.kind == "CHANNEL" then
-    local id = GetChannelName(t.channel)
-    if not id or id == 0 then
-      GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Skipping it for this cycle.")
-      t.lastSent = GetTime()
-      return
-    end
-    channelId = id
-  end
+local function channelId(t)
+  if t.kind ~= "CHANNEL" then return nil, true end
+  local id = GetChannelName(t.channel)
+  if not id or id == 0 then return nil, false end
+  return id, true
+end
 
-  local msg = GH.PickMessage()
-  SendChatMessage(msg, chatType, nil, channelId)
-  t.lastSent = GetTime()
+local function clearPending()
+  GH.pending = nil
+  if GH.HidePrompt then GH.HidePrompt() end
   if GH.UpdateUI then GH.UpdateUI() end
+end
+
+function GH.Prompt()
+  if GH.pending then if GH.ShowPrompt then GH.ShowPrompt() end return end
+  if not GH.db.running then return end
+  if UnitIsDeadOrGhost("player") or InCombatLockdown() then return end
+  local t = GH.NextDue()
+  if not t then return end
+  if #GH.db.messages == 0 then return end
+  local _, ok = channelId(t)
+  if not ok then
+    GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Skipping it for this cycle.")
+    t.lastSent = GetTime()
+    return
+  end
+  GH.pending = { target = t, msg = GH.PickMessage() }
+  if GH.ShowPrompt then GH.ShowPrompt() end
+  if GH.UpdateUI then GH.UpdateUI() end
+end
+
+function GH.Next()
+  if not GH.pending then return end
+  GH.pending.msg = GH.PickMessage()
+  if GH.ShowPrompt then GH.ShowPrompt() end
+end
+
+function GH.Approve()
+  local p = GH.pending
+  if not p then return end
+  local t = p.target
+  local id, ok = channelId(t)
+  if not ok then
+    GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Post dropped.")
+  else
+    SendChatMessage(p.msg, t.kind, nil, id)
+  end
+  t.lastSent = GetTime()
+  clearPending()
+end
+
+function GH.Skip()
+  local p = GH.pending
+  if not p then return end
+  p.target.lastSent = GetTime()
+  clearPending()
+end
+
+function GH.CancelTarget()
+  local p = GH.pending
+  if not p then return end
+  p.target.enabled = false
+  GH.Print("Stopped the timer for " .. GH.TargetLabel(p.target) .. ".")
+  clearPending()
+end
+
+function GH.CancelAll()
+  for _, t in ipairs(GH.db.targets) do t.enabled = false end
+  GH.db.running = false
+  GH.Print("All timers stopped.")
+  clearPending()
+end
+
+-- Keybind / /gh send: confirm the open preview, or open one if something is due.
+function GH.SendNext()
+  if GH.pending then GH.Approve() else GH.Prompt() end
 end
 function GuildHawk_SendNext() GH.SendNext() end
 

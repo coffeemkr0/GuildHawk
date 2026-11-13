@@ -5,7 +5,12 @@ A World of Warcraft addon for WoW Forever (client 1.60.1) that times guild recru
 ## How it works
 - Paste 100+ recruitment lines (one per line, max 255 characters each) into the config window and the addon picks one at random for each post, avoiding the last 20 used. An "In order" option is available.
 - Each target (a numbered channel by name, Say or Yell) has its own interval, with a 60-second minimum.
-- **Sending needs a click or keypress.** The modern engine only allows chat to Say, Yell and numbered channels from a hardware event, so a timer cannot send by itself. When a target is due, the Ready button reads "Send to <channel>" and plays a sound. Click it, press your bound key, or use `/gh send`.
+- **Sending needs a click.** The modern engine only allows chat to Say, Yell and numbered channels from a hardware event, so a timer cannot send by itself. When a channel is due, a preview window opens showing the message and the channel, with five buttons:
+  - **Next**: pick another random message (it is also marked as used).
+  - **Okay**: post the message.
+  - **Skip**: don't post, and restart that channel's timer.
+  - **Cancel**: stop the timer for that channel.
+  - **Cancel All**: stop the timers for all channels and stop the loop.
 
 ## Install
 1. Copy the `GuildHawk` folder into your Forever client's `Interface/AddOns/` folder (for example `_classic_era_` or `_classic_beta_`).
@@ -17,7 +22,7 @@ A World of Warcraft addon for WoW Forever (client 1.60.1) that times guild recru
 | --- | --- |
 | `/gh` | Open the config window |
 | `/gh start` / `/gh stop` | Start or stop the timers |
-| `/gh send` | Send the next due post |
+| `/gh send` | Open the preview for the next due post, or confirm it if already open |
 | `/gh status` | Show pool size and countdowns |
 
 A key binding is available under Key Bindings > AddOns > GuildHawk. Drag the Ready button with right-click to move it.
