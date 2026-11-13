@@ -562,18 +562,50 @@ local function BuildMessagesPanel()
   local ey = -(46 + ROWS * ROW_H + 12)
   local el = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   el:SetPoint("TOPLEFT", 6, ey)
-  el:SetText("Click a message to edit it, or type a new one:")
+  el:SetText("Click a message above to edit it, or type a new one:")
 
-  local eb = CreateFrame("EditBox", nil, msgPanel, "InputBoxTemplate")
-  eb:SetSize(490, 22)
-  eb:SetPoint("TOPLEFT", 12, ey - 18)
+  -- Multi-line edit area (the message is still one chat line; line breaks become spaces on save)
+  local box = CreateFrame("Frame", nil, msgPanel, "BackdropTemplate")
+  box:SetSize(490, 58)
+  box:SetPoint("TOPLEFT", 8, ey - 18)
+  box:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 14,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+  })
+  box:SetBackdropColor(0, 0, 0, 0.6)
+  box:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+
+  local scroll = CreateFrame("ScrollFrame", "GuildHawkEditScroll", box, "UIPanelScrollFrameTemplate")
+  scroll:SetPoint("TOPLEFT", 6, -6)
+  scroll:SetPoint("BOTTOMRIGHT", -26, 6)
+
+  local eb = CreateFrame("EditBox", nil, scroll)
+  eb:SetMultiLine(true)
   eb:SetAutoFocus(false)
+  eb:SetFontObject(ChatFontNormal)
+  eb:SetWidth(452)
+  eb:SetHeight(44)
   eb:SetMaxLetters(255)
+  scroll:SetScrollChild(eb)
+  scroll:EnableMouse(true)
+  scroll:SetScript("OnMouseDown", function() eb:SetFocus() end)
   eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+  -- keep the cursor line visible while typing
+  eb:SetScript("OnCursorChanged", function(_, _, y, _, h)
+    y = -y
+    local top, view = scroll:GetVerticalScroll(), scroll:GetHeight()
+    if y < top then scroll:SetVerticalScroll(y)
+    elseif y + h > top + view then scroll:SetVerticalScroll(y + h - view) end
+  end)
+  local counter = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+  counter:SetPoint("TOPRIGHT", -8, ey)
+  eb:SetScript("OnTextChanged", function(self) counter:SetText(#self:GetText() .. " / 255") end)
   msgPanel.edit = eb
 
   local save = flatButton(msgPanel, 90, 22, "Save edit")
-  save:SetPoint("TOPLEFT", 6, ey - 48)
+  save:SetPoint("TOPLEFT", 6, ey - 86)
   save:SetScript("OnClick", function()
     if editIndex and GH.SetMessageText(editIndex, eb:GetText()) then
       GH.Print("Message updated.")
@@ -597,7 +629,7 @@ local function BuildMessagesPanel()
   end)
 
   local clearAll = flatButton(msgPanel, 100, 22, "Clear list")
-  clearAll:SetPoint("TOPRIGHT", -6, ey - 48)
+  clearAll:SetPoint("TOPRIGHT", -6, ey - 86)
   local confirm = false
   clearAll:SetScript("OnClick", function(self)
     if not confirm then confirm = true; self:SetText("Sure?"); return end
@@ -610,7 +642,7 @@ local function BuildMessagesPanel()
   clearAll:SetScript("OnHide", function(self) confirm = false; self:SetText("Clear list") end)
 
   local tip = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-  tip:SetPoint("TOPLEFT", 6, ey - 78)
+  tip:SetPoint("TOPLEFT", 6, ey - 116)
   tip:SetWidth(500)
   tip:SetJustifyH("LEFT")
   tip:SetText("Top rows are picked more often (top = 3x the bottom). Favorites get another 3x. Unticked messages are never used. ^ / v move a row; hold Shift to move 10. Moving is off while a search or filter is active.")
@@ -635,7 +667,7 @@ end
 
 local function BuildConfig()
   cfg = CreateFrame("Frame", "GuildHawkConfig", UIParent, "BackdropTemplate")
-  cfg:SetSize(560, 560)
+  cfg:SetSize(560, 600)
   cfg:SetPoint("CENTER")
   cfg:SetFrameStrata("DIALOG")
   cfg:SetMovable(true)

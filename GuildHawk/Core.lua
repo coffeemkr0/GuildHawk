@@ -50,7 +50,7 @@ end
 local FAV_WEIGHT = 3
 
 local function clip(text)
-  text = (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  text = (text or ""):gsub("[\r\n]+", " "):gsub("^%s+", ""):gsub("%s+$", "")
   local long = #text > MAX_LEN
   if long then text = text:sub(1, MAX_LEN) end
   return text, long
