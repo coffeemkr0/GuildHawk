@@ -2,7 +2,6 @@
 local GH = GuildHawk
 
 local ready, cfg
-local rows = {}
 local KINDS = { "CHANNEL", "SAY", "YELL" }
 
 local function backdrop(frame)
@@ -20,13 +19,23 @@ end
 local function BuildReady()
   ready = CreateFrame("Button", "GuildHawkReadyButton", UIParent, "UIPanelButtonTemplate")
   ready:SetSize(190, 32)
-  ready:SetPoint("CENTER", UIParent, "CENTER", 0, -200)
+  local pos = GH.db.readyPos
+  if pos then
+    ready:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4])
+  else
+    ready:SetPoint("CENTER", UIParent, "CENTER", 0, -200)
+  end
   ready:SetMovable(true)
+  ready:SetClampedToScreen(true)
   ready:EnableMouse(true)
   ready:RegisterForClicks("LeftButtonUp")
-  ready:RegisterForDrag("RightButton")
+  ready:RegisterForDrag("LeftButton", "RightButton")
   ready:SetScript("OnDragStart", function(self) self:StartMoving() end)
-  ready:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+  ready:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local point, _, relPoint, x, y = self:GetPoint()
+    GH.db.readyPos = { point, relPoint, x, y }
+  end)
   ready:SetScript("OnClick", function() GH.Prompt() end)
   ready:SetText("Guild Hawk")
 
@@ -132,23 +141,37 @@ function GH.HidePrompt()
 end
 
 ---------------------------------------------------------------------------
--- Config window
+-- Config window: tabs "Messages" and "Channels", plus a bulk-import popup
 ---------------------------------------------------------------------------
-local function makeRow(i)
-  local r = CreateFrame("Frame", nil, cfg)
-  r:SetSize(420, 24)
-  r:SetPoint("TOPLEFT", cfg, "TOPLEFT", 20, -250 - (i - 1) * 26)
+local ROWS, ROW_H = 12, 24
+local msgRows, chanRows = {}, {}
+local msgPanel, chanPanel, importFrame
+local tabButtons = {}
+local listOffset, editIndex, refreshing = 0, nil, false
+local search, favOnly = "", false
+
+local function flatButton(parent, w, h, text)
+  local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+  b:SetSize(w, h)
+  b:SetText(text)
+  return b
+end
+
+-- ---- Channels tab ---------------------------------------------------------
+local function makeChannelRow(i)
+  local r = CreateFrame("Frame", nil, chanPanel)
+  r:SetSize(520, 24)
+  r:SetPoint("TOPLEFT", chanPanel, "TOPLEFT", 6, -62 - (i - 1) * 26)
 
   r.enable = CreateFrame("CheckButton", nil, r, "UICheckButtonTemplate")
   r.enable:SetPoint("LEFT", 0, 0)
   r.enable:SetSize(24, 24)
 
-  r.kind = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
-  r.kind:SetSize(70, 22)
+  r.kind = flatButton(r, 70, 22, "")
   r.kind:SetPoint("LEFT", r.enable, "RIGHT", 4, 0)
 
   r.channel = CreateFrame("EditBox", nil, r, "InputBoxTemplate")
-  r.channel:SetSize(110, 20)
+  r.channel:SetSize(130, 20)
   r.channel:SetPoint("LEFT", r.kind, "RIGHT", 12, 0)
   r.channel:SetAutoFocus(false)
 
@@ -162,10 +185,8 @@ local function makeRow(i)
   r.secs:SetPoint("LEFT", r.interval, "RIGHT", 4, 0)
   r.secs:SetText("sec")
 
-  r.del = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
-  r.del:SetSize(22, 22)
+  r.del = flatButton(r, 22, 22, "X")
   r.del:SetPoint("LEFT", r.secs, "RIGHT", 10, 0)
-  r.del:SetText("X")
 
   r.enable:SetScript("OnClick", function(self) r.target.enabled = self:GetChecked() and true or false; GH.UpdateUI() end)
   r.kind:SetScript("OnClick", function()
@@ -189,28 +210,432 @@ local function makeRow(i)
   return r
 end
 
-function GH.RefreshConfig()
-  if not cfg then return end
-  cfg.count:SetText(#GH.db.messages .. " messages in pool")
-  cfg.run:SetText(GH.db.running and "Stop" or "Start")
-  cfg.seq:SetChecked(GH.db.sequential)
+local function RefreshChannels()
+  if not chanPanel then return end
+  chanPanel.run:SetText(GH.db.running and "Stop" or "Start")
+  chanPanel.seq:SetChecked(GH.db.sequential)
   for i, t in ipairs(GH.db.targets) do
-    rows[i] = rows[i] or makeRow(i)
-    local r = rows[i]
+    chanRows[i] = chanRows[i] or makeChannelRow(i)
+    local r = chanRows[i]
     r.target = t
     r:Show()
     r.enable:SetChecked(t.enabled)
     r.kind:SetText(t.kind)
-    r.channel:SetText(t.channel or "")
+    if not r.channel:HasFocus() then r.channel:SetText(t.channel or "") end
     if t.kind == "CHANNEL" then r.channel:Show() else r.channel:Hide() end
     if not r.interval:HasFocus() then r.interval:SetText(t.interval) end
   end
-  for i = #GH.db.targets + 1, #rows do rows[i]:Hide() end
+  for i = #GH.db.targets + 1, #chanRows do chanRows[i]:Hide() end
+end
+
+local function BuildChannelsPanel()
+  chanPanel = CreateFrame("Frame", nil, cfg)
+  chanPanel:SetPoint("TOPLEFT", 14, -66)
+  chanPanel:SetPoint("BOTTOMRIGHT", -14, 14)
+
+  chanPanel.run = flatButton(chanPanel, 80, 22, "Start")
+  chanPanel.run:SetPoint("TOPLEFT", 6, 0)
+  chanPanel.run:SetScript("OnClick", function() GH.db.running = not GH.db.running; GH.UpdateUI() end)
+
+  chanPanel.seq = CreateFrame("CheckButton", nil, chanPanel, "UICheckButtonTemplate")
+  chanPanel.seq:SetSize(24, 24)
+  chanPanel.seq:SetPoint("LEFT", chanPanel.run, "RIGHT", 16, 0)
+  chanPanel.seq:SetScript("OnClick", function(self) GH.db.sequential = self:GetChecked() and true or false end)
+  local sl = chanPanel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  sl:SetPoint("LEFT", chanPanel.seq, "RIGHT", 2, 0)
+  sl:SetText("Post messages in list order instead of random")
+
+  local th = chanPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  th:SetPoint("TOPLEFT", 6, -42)
+  th:SetText("Channels:  on / type / channel name / interval (minimum 60 seconds)")
+
+  local add = flatButton(chanPanel, 110, 22, "Add channel")
+  add:SetPoint("BOTTOMLEFT", 6, 6)
+  add:SetScript("OnClick", function()
+    if #GH.db.targets >= 8 then return end
+    table.insert(GH.db.targets, { kind = "CHANNEL", channel = "General", interval = 180, enabled = true, lastSent = GetTime() - 180 })
+    GH.RefreshConfig()
+  end)
+
+  local review = flatButton(chanPanel, 130, 22, "Review next due")
+  review:SetPoint("BOTTOMRIGHT", -6, 6)
+  review:SetScript("OnClick", function() GH.SendNext() end)
+end
+
+-- ---- Messages tab ---------------------------------------------------------
+local function viewList()
+  local view, q = {}, search:lower()
+  for i, m in ipairs(GH.db.messages) do
+    if (not favOnly or m.fav) and (q == "" or m.text:lower():find(q, 1, true)) then
+      view[#view + 1] = i
+    end
+  end
+  return view
+end
+
+local function filtered() return search ~= "" or favOnly end
+
+local function PopulateRows(view)
+  local msgs = GH.db.messages
+  for r = 1, ROWS do
+    local row = msgRows[r]
+    local idx = view[listOffset + r]
+    local m = idx and msgs[idx]
+    if m then
+      row.idx = idx
+      row:Show()
+      row.enable:SetChecked(m.enabled)
+      row.num:SetText(idx)
+      row.fs:SetText(m.text)
+      if not m.enabled then row.fs:SetTextColor(0.5, 0.5, 0.5)
+      elseif GH.IsRecent(m.id) then row.fs:SetTextColor(0.75, 0.75, 0.55)
+      else row.fs:SetTextColor(1, 1, 1) end
+      row.star:SetAlpha(m.fav and 1 or 0.2)
+      row.sel:SetShown(idx == editIndex)
+      local canMove = not filtered()
+      row.up:SetAlpha(canMove and 1 or 0.3)
+      row.down:SetAlpha(canMove and 1 or 0.3)
+    else
+      row.idx = nil
+      row:Hide()
+    end
+  end
+end
+
+local function RefreshMessages()
+  if not msgPanel then return end
+  local view = viewList()
+  local maxOffset = math.max(0, #view - ROWS)
+  if listOffset > maxOffset then listOffset = maxOffset end
+  refreshing = true
+  msgPanel.slider:SetMinMaxValues(0, maxOffset)
+  msgPanel.slider:SetValue(listOffset)
+  refreshing = false
+  msgPanel.slider:SetShown(maxOffset > 0)
+  PopulateRows(view)
+  local total = #GH.db.messages
+  msgPanel.count:SetText(string.format("%d shown / %d total / %d enabled", #view, total, GH.EnabledCount()))
+  msgPanel.save:SetAlpha(editIndex and 1 or 0.4)
+end
+
+local function selectMessage(idx)
+  editIndex = idx
+  local m = idx and GH.db.messages[idx]
+  msgPanel.edit:SetText(m and m.text or "")
+  if m then msgPanel.edit:SetFocus() end
+  RefreshMessages()
+end
+
+local function makeMessageRow(r)
+  local row = CreateFrame("Frame", nil, msgPanel.list)
+  row:SetSize(484, ROW_H)
+  row:SetPoint("TOPLEFT", msgPanel.list, "TOPLEFT", 0, -(r - 1) * ROW_H)
+
+  row.sel = row:CreateTexture(nil, "BACKGROUND")
+  row.sel:SetAllPoints()
+  row.sel:SetColorTexture(1, 0.82, 0, 0.15)
+  row.sel:Hide()
+
+  row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+  row.enable:SetSize(22, 22)
+  row.enable:SetPoint("LEFT", 0, 0)
+  row.enable:SetScript("OnClick", function(self)
+    local m = GH.db.messages[row.idx]
+    if m then m.enabled = self:GetChecked() and true or false end
+    RefreshMessages()
+  end)
+
+  row.favBtn = CreateFrame("Button", nil, row)
+  row.favBtn:SetSize(20, 20)
+  row.favBtn:SetPoint("LEFT", row.enable, "RIGHT", 2, 0)
+  row.star = row.favBtn:CreateTexture(nil, "ARTWORK")
+  row.star:SetAllPoints()
+  row.star:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcon_1")
+  row.favBtn:SetScript("OnClick", function()
+    local m = GH.db.messages[row.idx]
+    if m then m.fav = not m.fav end
+    RefreshMessages()
+  end)
+  row.favBtn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText("Favorite: picked about 3x more often")
+    GameTooltip:Show()
+  end)
+  row.favBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+  row.num = row:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  row.num:SetPoint("LEFT", row.favBtn, "RIGHT", 4, 0)
+  row.num:SetWidth(26)
+  row.num:SetJustifyH("RIGHT")
+
+  row.del = flatButton(row, 22, 20, "X")
+  row.del:SetPoint("RIGHT", 0, 0)
+  row.down = flatButton(row, 22, 20, "v")
+  row.down:SetPoint("RIGHT", row.del, "LEFT", -2, 0)
+  row.up = flatButton(row, 22, 20, "^")
+  row.up:SetPoint("RIGHT", row.down, "LEFT", -2, 0)
+
+  row.textBtn = CreateFrame("Button", nil, row)
+  row.textBtn:SetPoint("LEFT", row.num, "RIGHT", 6, 0)
+  row.textBtn:SetPoint("RIGHT", row.up, "LEFT", -6, 0)
+  row.textBtn:SetHeight(ROW_H)
+  row.textBtn:SetHighlightTexture("Interface\\Buttons\\UI-Listbox-Highlight2")
+  row.fs = row.textBtn:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  row.fs:SetAllPoints()
+  row.fs:SetJustifyH("LEFT")
+  row.fs:SetWordWrap(false)
+
+  row.textBtn:SetScript("OnClick", function() selectMessage(row.idx) end)
+  row.textBtn:SetScript("OnEnter", function(self)
+    local m = GH.db.messages[row.idx]
+    if not m then return end
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(m.text, 1, 1, 1, 1, true)
+    GameTooltip:AddLine("Click to edit", 0.6, 0.6, 0.6)
+    GameTooltip:Show()
+  end)
+  row.textBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+  local function move(delta)
+    if filtered() or not row.idx then return end
+    local step = IsShiftKeyDown() and 10 or 1
+    local from = row.idx
+    local to = GH.MoveMessage(from, delta * step)
+    if editIndex == from then editIndex = to end
+    RefreshMessages()
+  end
+  row.up:SetScript("OnClick", function() move(-1) end)
+  row.down:SetScript("OnClick", function() move(1) end)
+  row.del:SetScript("OnClick", function()
+    if not row.idx then return end
+    GH.DeleteMessage(row.idx)
+    if editIndex == row.idx then editIndex = nil; msgPanel.edit:SetText("")
+    elseif editIndex and editIndex > row.idx then editIndex = editIndex - 1 end
+    RefreshMessages()
+  end)
+  return row
+end
+
+local function BuildImportFrame()
+  importFrame = CreateFrame("Frame", "GuildHawkImport", UIParent, "BackdropTemplate")
+  importFrame:SetSize(480, 340)
+  importFrame:SetPoint("CENTER")
+  importFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+  importFrame:SetMovable(true)
+  importFrame:EnableMouse(true)
+  importFrame:RegisterForDrag("LeftButton")
+  importFrame:SetScript("OnDragStart", importFrame.StartMoving)
+  importFrame:SetScript("OnDragStop", importFrame.StopMovingOrSizing)
+  backdrop(importFrame)
+  importFrame:Hide()
+  tinsert(UISpecialFrames, "GuildHawkImport")
+
+  local title = importFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+  title:SetPoint("TOP", 0, -14)
+  title:SetText("Bulk import messages")
+
+  local hint = importFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  hint:SetPoint("TOPLEFT", 20, -40)
+  hint:SetWidth(440)
+  hint:SetJustifyH("LEFT")
+  hint:SetText("Paste your messages below. Every line break starts a new message. Blank lines are ignored and lines over 255 characters are cut.")
+
+  local scroll = CreateFrame("ScrollFrame", "GuildHawkImportScroll", importFrame, "UIPanelScrollFrameTemplate")
+  scroll:SetPoint("TOPLEFT", 20, -78)
+  scroll:SetSize(410, 190)
+  local box = CreateFrame("EditBox", nil, scroll)
+  box:SetMultiLine(true)
+  box:SetAutoFocus(false)
+  box:SetFontObject(ChatFontNormal)
+  box:SetWidth(400)
+  box:SetMaxLetters(0)
+  box:SetScript("OnEscapePressed", box.ClearFocus)
+  scroll:SetScrollChild(box)
+  importFrame.box = box
+
+  local status = importFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  status:SetPoint("TOPLEFT", 20, -274)
+  importFrame.status = status
+  box:SetScript("OnTextChanged", function(self)
+    local list, long = GH.ParseMessages(self:GetText())
+    status:SetText(string.format("%d messages detected%s", #list, long > 0 and (", " .. long .. " will be cut to 255 characters") or ""))
+  end)
+
+  local confirmReplace = false
+  local function done(n, long, verb)
+    GH.Print(string.format("%s %d messages%s.", verb, n, long > 0 and (" (" .. long .. " cut to 255)") or ""))
+    box:SetText("")
+    importFrame:Hide()
+    editIndex, listOffset = nil, 0
+    GH.RefreshConfig()
+  end
+
+  local append = flatButton(importFrame, 120, 24, "Add to list")
+  append:SetPoint("BOTTOMLEFT", 20, 16)
+  append:SetScript("OnClick", function()
+    local n, long = GH.ImportMessages(box:GetText(), true)
+    done(n, long, "Added")
+  end)
+
+  local replace = flatButton(importFrame, 150, 24, "Replace whole list")
+  replace:SetPoint("LEFT", append, "RIGHT", 8, 0)
+  replace:SetScript("OnClick", function(self)
+    if #GH.db.messages > 0 and not confirmReplace then
+      confirmReplace = true
+      self:SetText("Click again to confirm")
+      return
+    end
+    local n, long = GH.ImportMessages(box:GetText(), false)
+    done(n, long, "Imported")
+  end)
+  importFrame:SetScript("OnHide", function() confirmReplace = false; replace:SetText("Replace whole list") end)
+
+  local cancel = flatButton(importFrame, 90, 24, "Cancel")
+  cancel:SetPoint("BOTTOMRIGHT", -20, 16)
+  cancel:SetScript("OnClick", function() importFrame:Hide() end)
+end
+
+local function BuildMessagesPanel()
+  msgPanel = CreateFrame("Frame", nil, cfg)
+  msgPanel:SetPoint("TOPLEFT", 14, -66)
+  msgPanel:SetPoint("BOTTOMRIGHT", -14, 14)
+
+  local imp = flatButton(msgPanel, 120, 22, "Bulk import...")
+  imp:SetPoint("TOPLEFT", 6, 0)
+  imp:SetScript("OnClick", function() importFrame:Show(); importFrame.box:SetFocus() end)
+
+  local sl = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  sl:SetPoint("LEFT", imp, "RIGHT", 14, 0)
+  sl:SetText("Search:")
+  local sb = CreateFrame("EditBox", nil, msgPanel, "InputBoxTemplate")
+  sb:SetSize(130, 20)
+  sb:SetPoint("LEFT", sl, "RIGHT", 8, 0)
+  sb:SetAutoFocus(false)
+  sb:SetScript("OnTextChanged", function(self) search = self:GetText() or ""; listOffset = 0; RefreshMessages() end)
+  sb:SetScript("OnEscapePressed", function(self) self:SetText(""); self:ClearFocus() end)
+  sb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+
+  local fo = CreateFrame("CheckButton", nil, msgPanel, "UICheckButtonTemplate")
+  fo:SetSize(22, 22)
+  fo:SetPoint("LEFT", sb, "RIGHT", 10, 0)
+  fo:SetScript("OnClick", function(self) favOnly = self:GetChecked() and true or false; listOffset = 0; RefreshMessages() end)
+  local fl = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  fl:SetPoint("LEFT", fo, "RIGHT", 0, 0)
+  fl:SetText("Favorites only")
+
+  msgPanel.count = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  msgPanel.count:SetPoint("TOPLEFT", 6, -28)
+
+  msgPanel.list = CreateFrame("Frame", nil, msgPanel)
+  msgPanel.list:SetPoint("TOPLEFT", 0, -46)
+  msgPanel.list:SetSize(484, ROWS * ROW_H)
+  msgPanel.list:EnableMouseWheel(true)
+  msgPanel.list:SetScript("OnMouseWheel", function(_, delta)
+    msgPanel.slider:SetValue(math.max(0, listOffset - delta * 3))
+  end)
+  local bg = msgPanel.list:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints()
+  bg:SetColorTexture(0, 0, 0, 0.3)
+
+  local slider = CreateFrame("Slider", nil, msgPanel)
+  slider:SetOrientation("VERTICAL")
+  slider:SetSize(16, ROWS * ROW_H)
+  slider:SetPoint("TOPLEFT", msgPanel.list, "TOPRIGHT", 4, 0)
+  slider:SetMinMaxValues(0, 0)
+  slider:SetValueStep(1)
+  slider:SetValue(0)
+  slider:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+  local thumb = slider:GetThumbTexture()
+  if thumb then thumb:SetSize(16, 24) end
+  local track = slider:CreateTexture(nil, "BACKGROUND")
+  track:SetAllPoints()
+  track:SetColorTexture(1, 1, 1, 0.08)
+  slider:SetScript("OnValueChanged", function(_, value)
+    if refreshing then return end
+    listOffset = math.floor(value + 0.5)
+    PopulateRows(viewList())
+  end)
+  msgPanel.slider = slider
+
+  for r = 1, ROWS do msgRows[r] = makeMessageRow(r) end
+
+  local ey = -(46 + ROWS * ROW_H + 12)
+  local el = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  el:SetPoint("TOPLEFT", 6, ey)
+  el:SetText("Click a message to edit it, or type a new one:")
+
+  local eb = CreateFrame("EditBox", nil, msgPanel, "InputBoxTemplate")
+  eb:SetSize(490, 22)
+  eb:SetPoint("TOPLEFT", 12, ey - 18)
+  eb:SetAutoFocus(false)
+  eb:SetMaxLetters(255)
+  eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+  msgPanel.edit = eb
+
+  local save = flatButton(msgPanel, 90, 22, "Save edit")
+  save:SetPoint("TOPLEFT", 6, ey - 48)
+  save:SetScript("OnClick", function()
+    if editIndex and GH.SetMessageText(editIndex, eb:GetText()) then
+      GH.Print("Message updated.")
+    end
+    eb:ClearFocus()
+    RefreshMessages()
+  end)
+  msgPanel.save = save
+
+  local addNew = flatButton(msgPanel, 110, 22, "Add as new")
+  addNew:SetPoint("LEFT", save, "RIGHT", 6, 0)
+  addNew:SetScript("OnClick", function()
+    if GH.AddMessage(eb:GetText()) then
+      eb:SetText(""); editIndex = nil
+      search, favOnly = "", false
+      sb:SetText(""); fo:SetChecked(false)
+      listOffset = math.max(0, #GH.db.messages - ROWS)
+    end
+    eb:ClearFocus()
+    RefreshMessages()
+  end)
+
+  local clearAll = flatButton(msgPanel, 100, 22, "Clear list")
+  clearAll:SetPoint("TOPRIGHT", -6, ey - 48)
+  local confirm = false
+  clearAll:SetScript("OnClick", function(self)
+    if not confirm then confirm = true; self:SetText("Sure?"); return end
+    confirm = false; self:SetText("Clear list")
+    GH.db.messages = {}; GH.db.recent = {}; GH.db.seqIndex = 0
+    editIndex, listOffset = nil, 0
+    eb:SetText("")
+    RefreshMessages()
+  end)
+  clearAll:SetScript("OnHide", function(self) confirm = false; self:SetText("Clear list") end)
+
+  local tip = msgPanel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+  tip:SetPoint("TOPLEFT", 6, ey - 78)
+  tip:SetWidth(500)
+  tip:SetJustifyH("LEFT")
+  tip:SetText("Top rows are picked more often (top = 3x the bottom). Favorites get another 3x. Unticked messages are never used. ^ / v move a row; hold Shift to move 10. Moving is off while a search or filter is active.")
+end
+
+-- ---- Window ---------------------------------------------------------------
+local function ShowTab(n)
+  GH.cfgTab = n
+  msgPanel:SetShown(n == 1)
+  chanPanel:SetShown(n == 2)
+  for i, b in ipairs(tabButtons) do
+    if i == n then b:Disable() else b:Enable() end
+  end
+  GH.RefreshConfig()
+end
+
+function GH.RefreshConfig()
+  if not cfg then return end
+  RefreshChannels()
+  RefreshMessages()
 end
 
 local function BuildConfig()
   cfg = CreateFrame("Frame", "GuildHawkConfig", UIParent, "BackdropTemplate")
-  cfg:SetSize(480, 460)
+  cfg:SetSize(560, 560)
   cfg:SetPoint("CENTER")
   cfg:SetFrameStrata("DIALOG")
   cfg:SetMovable(true)
@@ -229,76 +654,23 @@ local function BuildConfig()
   local close = CreateFrame("Button", nil, cfg, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", -4, -4)
 
-  cfg.run = CreateFrame("Button", nil, cfg, "UIPanelButtonTemplate")
-  cfg.run:SetSize(80, 22)
-  cfg.run:SetPoint("TOPLEFT", 20, -40)
-  cfg.run:SetScript("OnClick", function()
-    GH.db.running = not GH.db.running
-    GH.UpdateUI()
-  end)
-
-  cfg.count = cfg:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-  cfg.count:SetPoint("LEFT", cfg.run, "RIGHT", 12, 0)
-
-  cfg.seq = CreateFrame("CheckButton", nil, cfg, "UICheckButtonTemplate")
-  cfg.seq:SetPoint("TOPRIGHT", -110, -38)
-  cfg.seq:SetSize(24, 24)
-  local seqLabel = cfg:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-  seqLabel:SetPoint("LEFT", cfg.seq, "RIGHT", 2, 0)
-  seqLabel:SetText("In order")
-  cfg.seq:SetScript("OnClick", function(self) GH.db.sequential = self:GetChecked() and true or false end)
-
-  local hint = cfg:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
-  hint:SetPoint("TOPLEFT", 20, -72)
-  hint:SetText("Paste messages below, one per line (max 255 chars each):")
-
-  local scroll = CreateFrame("ScrollFrame", "GuildHawkScroll", cfg, "UIPanelScrollFrameTemplate")
-  scroll:SetPoint("TOPLEFT", 20, -90)
-  scroll:SetSize(410, 110)
-  local box = CreateFrame("EditBox", nil, scroll)
-  box:SetMultiLine(true)
-  box:SetAutoFocus(false)
-  box:SetFontObject(ChatFontNormal)
-  box:SetWidth(400)
-  box:SetMaxLetters(0)
-  box:SetScript("OnEscapePressed", box.ClearFocus)
-  scroll:SetScrollChild(box)
-  cfg.box = box
-
-  local function doImport(append)
-    local n, long = GH.ImportMessages(box:GetText(), append)
-    box:SetText("")
-    GH.Print(string.format("Imported %d messages%s.", n, long > 0 and (" (" .. long .. " truncated to 255)") or ""))
-    GH.RefreshConfig()
+  local names = { "Messages", "Channels" }
+  for i, name in ipairs(names) do
+    local b = flatButton(cfg, 110, 24, name)
+    b:SetPoint("TOPLEFT", 20 + (i - 1) * 114, -38)
+    b:SetScript("OnClick", function() ShowTab(i) end)
+    tabButtons[i] = b
   end
 
-  local replace = CreateFrame("Button", nil, cfg, "UIPanelButtonTemplate")
-  replace:SetSize(110, 22); replace:SetPoint("TOPLEFT", 20, -208); replace:SetText("Replace pool")
-  replace:SetScript("OnClick", function() doImport(false) end)
+  BuildImportFrame()
+  BuildMessagesPanel()
+  BuildChannelsPanel()
+  cfg:SetScript("OnShow", function() ShowTab(GH.cfgTab or 1) end)
+end
 
-  local append = CreateFrame("Button", nil, cfg, "UIPanelButtonTemplate")
-  append:SetSize(110, 22); append:SetPoint("LEFT", replace, "RIGHT", 6, 0); append:SetText("Append")
-  append:SetScript("OnClick", function() doImport(true) end)
-
-  local clear = CreateFrame("Button", nil, cfg, "UIPanelButtonTemplate")
-  clear:SetSize(110, 22); clear:SetPoint("LEFT", append, "RIGHT", 6, 0); clear:SetText("Clear pool")
-  clear:SetScript("OnClick", function() GH.db.messages = {}; GH.db.recent = {}; GH.RefreshConfig() end)
-
-  local th = cfg:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
-  th:SetPoint("TOPLEFT", 20, -236)
-  th:SetText("Targets: on / type / channel name / interval (min 60s)")
-
-  local add = CreateFrame("Button", nil, cfg, "UIPanelButtonTemplate")
-  add:SetSize(110, 22); add:SetPoint("BOTTOMLEFT", 20, 16); add:SetText("Add target")
-  add:SetScript("OnClick", function()
-    if #GH.db.targets >= 8 then return end
-    table.insert(GH.db.targets, { kind = "CHANNEL", channel = "General", interval = 180, enabled = true, lastSent = GetTime() - 180 })
-    GH.RefreshConfig()
-  end)
-
-  local sendNow = CreateFrame("Button", nil, cfg, "UIPanelButtonTemplate")
-  sendNow:SetSize(130, 22); sendNow:SetPoint("BOTTOMRIGHT", -20, 16); sendNow:SetText("Review next due")
-  sendNow:SetScript("OnClick", function() GH.SendNext() end)
+function GH.ToggleConfig()
+  if not cfg then return end
+  if cfg:IsShown() then cfg:Hide() else cfg:Show() end
 end
 
 ---------------------------------------------------------------------------
@@ -361,11 +733,6 @@ local function BuildMinimapButton()
   PlaceMinimapButton()
 end
 
-function GH.ToggleConfig()
-  if not cfg then return end
-  if cfg:IsShown() then cfg:Hide() else GH.RefreshConfig(); cfg:Show() end
-end
-
 function GH.BuildUI()
   local steps = {
     { "Ready button", BuildReady },
@@ -378,5 +745,5 @@ function GH.BuildUI()
     if not ok then GH.Print("|cffff4040" .. s[1] .. " failed:|r " .. tostring(err)) end
   end
   pcall(GH.UpdateUI)
-  GH.Print("Loaded. /gh to configure, /gh start to begin. Drag the button with right-click.")
+  GH.Print("Loaded. /gh to configure, /gh start to begin. Drag the countdown button to move it.")
 end

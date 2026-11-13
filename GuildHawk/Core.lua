@@ -15,6 +15,7 @@ local defaults = {
   sequential = false,
   running = false,
   seqIndex = 0,
+  nextId = 0,
   minimapAngle = 200,
   targets = {
     { kind = "CHANNEL", channel = "Trade", interval = 180, enabled = true, lastSent = 0 },
@@ -42,18 +43,41 @@ end
 
 ---------------------------------------------------------------------------
 -- Message pool
+--   Each message is { id, text, enabled, fav }. Position in the list is its priority:
+--   higher rows are picked more often in random mode, and "In order" mode walks the list
+--   top to bottom. Favorites get an extra boost. Disabled messages are never picked.
 ---------------------------------------------------------------------------
--- Split pasted text into messages: one per line, trimmed, blanks dropped.
+local FAV_WEIGHT = 3
+
+local function clip(text)
+  text = (text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local long = #text > MAX_LEN
+  if long then text = text:sub(1, MAX_LEN) end
+  return text, long
+end
+
+local function newMessage(text)
+  GH.db.nextId = (GH.db.nextId or 0) + 1
+  return { id = GH.db.nextId, text = text, enabled = true, fav = false }
+end
+
+-- Upgrade messages saved by older versions (plain strings) to the table form.
+function GH.MigrateMessages()
+  local msgs, changed = GH.db.messages, false
+  for i, v in ipairs(msgs) do
+    if type(v) == "string" then msgs[i] = newMessage(v); changed = true end
+  end
+  if changed then GH.db.recent = {}; GH.db.seqIndex = 0 end
+end
+
+-- Split pasted text into messages: every line break starts a new message.
 -- Returns list, tooLongCount (lines over 255 are truncated to 255).
 function GH.ParseMessages(text)
   local list, long = {}, 0
   for raw in (text or ""):gmatch("[^\r\n]+") do
-    local line = raw:gsub("^%s+", ""):gsub("%s+$", "")
+    local line, wasLong = clip(raw)
     if line ~= "" then
-      if #line > MAX_LEN then
-        long = long + 1
-        line = line:sub(1, MAX_LEN)
-      end
+      if wasLong then long = long + 1 end
       list[#list + 1] = line
     end
   end
@@ -63,39 +87,104 @@ end
 function GH.ImportMessages(text, append)
   local list, long = GH.ParseMessages(text)
   if not append then GH.db.messages = {} end
-  for _, m in ipairs(list) do GH.db.messages[#GH.db.messages + 1] = m end
+  for _, line in ipairs(list) do
+    GH.db.messages[#GH.db.messages + 1] = newMessage(line)
+  end
   GH.db.recent = {}
   GH.db.seqIndex = 0
   return #list, long
 end
 
-local function isRecent(idx)
-  for _, r in ipairs(GH.db.recent) do if r == idx then return true end end
+function GH.AddMessage(text)
+  local line = clip(text)
+  if line == "" then return false end
+  GH.db.messages[#GH.db.messages + 1] = newMessage(line)
+  return true
+end
+
+function GH.SetMessageText(i, text)
+  local m, line = GH.db.messages[i], clip(text)
+  if not m or line == "" then return false end
+  m.text = line
+  return true
+end
+
+function GH.DeleteMessage(i)
+  table.remove(GH.db.messages, i)
+end
+
+-- Move message i by delta rows (clamped). Returns its new position.
+function GH.MoveMessage(i, delta)
+  local msgs = GH.db.messages
+  local j = math.max(1, math.min(#msgs, i + delta))
+  if j == i then return i end
+  local m = table.remove(msgs, i)
+  table.insert(msgs, j, m)
+  return j
+end
+
+function GH.EnabledCount()
+  local n = 0
+  for _, m in ipairs(GH.db.messages) do if m.enabled then n = n + 1 end end
+  return n
+end
+
+function GH.IsRecent(id)
+  for _, r in ipairs(GH.db.recent) do if r == id then return true end end
   return false
 end
 
--- Pick a message: random avoiding the last N used, or sequential.
+-- Priority weight: top row = 3x, bottom row = 1x; favorites are multiplied again.
+local function weight(i, n, m)
+  local w = 1 + 2 * (n - i) / math.max(n - 1, 1)
+  if m.fav then w = w * FAV_WEIGHT end
+  return w
+end
+
+-- Pick the next message. Returns text, id (nil if nothing is enabled).
 function GH.PickMessage()
   local msgs = GH.db.messages
   local n = #msgs
-  if n == 0 then return nil end
+  local enabled = {}
+  for i, m in ipairs(msgs) do if m.enabled then enabled[#enabled + 1] = i end end
+  if #enabled == 0 then return nil end
 
   local idx
   if GH.db.sequential then
-    GH.db.seqIndex = (GH.db.seqIndex % n) + 1
-    idx = GH.db.seqIndex
+    local start = GH.db.seqIndex or 0
+    for step = 1, n do
+      local i = ((start + step - 1) % n) + 1
+      if msgs[i].enabled then idx = i; break end
+    end
+    GH.db.seqIndex = idx
   else
-    local window = math.min(20, math.floor(n / 2))
     GH.db.recent = GH.db.recent or {}
-    local tries = 0
-    repeat
-      idx = math.random(n)
-      tries = tries + 1
-    until not isRecent(idx) or tries > 50
-    table.insert(GH.db.recent, idx)
+    local window = math.min(20, math.floor(#enabled / 2))
+    local cand, total = {}, 0
+    for _, i in ipairs(enabled) do
+      if not GH.IsRecent(msgs[i].id) then
+        local w = weight(i, n, msgs[i])
+        cand[#cand + 1] = { i, w }
+        total = total + w
+      end
+    end
+    if #cand == 0 then -- everything was used recently: start over with all enabled
+      for _, i in ipairs(enabled) do
+        local w = weight(i, n, msgs[i])
+        cand[#cand + 1] = { i, w }
+        total = total + w
+      end
+    end
+    local r = math.random() * total
+    idx = cand[#cand][1]
+    for _, cw in ipairs(cand) do
+      r = r - cw[2]
+      if r <= 0 then idx = cw[1]; break end
+    end
+    table.insert(GH.db.recent, msgs[idx].id)
     while #GH.db.recent > window do table.remove(GH.db.recent, 1) end
   end
-  return msgs[idx], idx
+  return msgs[idx].text, msgs[idx].id
 end
 
 ---------------------------------------------------------------------------
@@ -159,7 +248,7 @@ function GH.Prompt()
   if UnitIsDeadOrGhost("player") or InCombatLockdown() then return end
   local t = GH.NextDue()
   if not t then return end
-  if #GH.db.messages == 0 then return end
+  if GH.EnabledCount() == 0 then return end
   local _, ok = channelId(t)
   if not ok then
     GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Skipping it for this cycle.")
@@ -173,7 +262,7 @@ end
 
 function GH.Next()
   if not GH.pending then return end
-  GH.pending.msg = GH.PickMessage()
+  GH.pending.msg = GH.PickMessage() or GH.pending.msg
   if GH.ShowPrompt then GH.ShowPrompt() end
 end
 
@@ -232,6 +321,7 @@ local function Init()
   local seed = (GetServerTime and GetServerTime()) or (time and time()) or math.floor(GetTime() * 1000)
   if math.randomseed then math.randomseed(seed) end
   GH.InitDB()
+  GH.MigrateMessages()
   -- lastSent uses GetTime(), which resets each session: make every target due after min wait.
   local now = GetTime()
   for _, t in ipairs(GH.db.targets) do t.lastSent = now - t.interval end
@@ -264,7 +354,7 @@ SlashCmdList["GUILDHAWK"] = function(arg)
   elseif arg == "send" then
     GH.SendNext()
   elseif arg == "status" then
-    GH.Print((GH.db.running and "Running" or "Stopped") .. ", " .. #GH.db.messages .. " messages.")
+    GH.Print((GH.db.running and "Running" or "Stopped") .. ", " .. GH.EnabledCount() .. " of " .. #GH.db.messages .. " messages enabled.")
     local now = GetTime()
     for _, t in ipairs(GH.db.targets) do
       local left = math.max(0, t.interval - (now - (t.lastSent or 0)))
