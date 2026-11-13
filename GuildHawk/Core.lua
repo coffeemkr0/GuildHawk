@@ -228,7 +228,9 @@ local inited = false
 local function Init()
   if inited then return end
   inited = true
-  math.randomseed(time())
+  -- `time` is not available in every client build, so pick whichever clock exists.
+  local seed = (GetServerTime and GetServerTime()) or (time and time()) or math.floor(GetTime() * 1000)
+  if math.randomseed then math.randomseed(seed) end
   GH.InitDB()
   -- lastSent uses GetTime(), which resets each session: make every target due after min wait.
   local now = GetTime()
