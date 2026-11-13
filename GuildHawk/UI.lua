@@ -367,10 +367,16 @@ function GH.ToggleConfig()
 end
 
 function GH.BuildUI()
-  BuildReady()
-  BuildPrompt()
-  BuildConfig()
-  BuildMinimapButton()
-  GH.UpdateUI()
+  local steps = {
+    { "Ready button", BuildReady },
+    { "Prompt", BuildPrompt },
+    { "Config window", BuildConfig },
+    { "Minimap button", BuildMinimapButton },
+  }
+  for _, s in ipairs(steps) do
+    local ok, err = pcall(s[2])
+    if not ok then GH.Print("|cffff4040" .. s[1] .. " failed:|r " .. tostring(err)) end
+  end
+  pcall(GH.UpdateUI)
   GH.Print("Loaded. /gh to configure, /gh start to begin. Drag the button with right-click.")
 end

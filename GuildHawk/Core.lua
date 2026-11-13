@@ -222,21 +222,38 @@ function GuildHawk_SendNext() GH.SendNext() end
 ---------------------------------------------------------------------------
 -- Events / slash
 ---------------------------------------------------------------------------
-local f = CreateFrame("Frame")
-f:RegisterEvent("ADDON_LOADED")
-f:SetScript("OnEvent", function(_, _, name)
-  if name ~= ADDON then return end
+-- Init on PLAYER_LOGIN (SavedVariables are loaded by then). This does not depend on
+-- the addon folder name matching, unlike an ADDON_LOADED name check.
+local inited = false
+local function Init()
+  if inited then return end
+  inited = true
   math.randomseed(time())
   GH.InitDB()
   -- lastSent uses GetTime(), which resets each session: make every target due after min wait.
   local now = GetTime()
   for _, t in ipairs(GH.db.targets) do t.lastSent = now - t.interval end
-  if GH.BuildUI then GH.BuildUI() end
-end)
+  if GH.BuildUI then
+    local ok, err = pcall(GH.BuildUI)
+    if not ok then
+      GH.Print("|cffff4040UI failed to build:|r " .. tostring(err))
+    end
+  else
+    GH.Print("|cffff4040UI.lua did not load.|r")
+  end
+end
+GH.Init = Init
+
+local f = CreateFrame("Frame")
+f:RegisterEvent("PLAYER_LOGIN")
+f:SetScript("OnEvent", Init)
+-- If the addon was enabled/reloaded after login, PLAYER_LOGIN will not fire again.
+if IsLoggedIn and IsLoggedIn() then Init() end
 
 SLASH_GUILDHAWK1 = "/gh"
 SLASH_GUILDHAWK2 = "/guildhawk"
 SlashCmdList["GUILDHAWK"] = function(arg)
+  Init()
   arg = (arg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
   if arg == "start" then
     GH.db.running = true; GH.Print("Started.")
@@ -252,7 +269,8 @@ SlashCmdList["GUILDHAWK"] = function(arg)
       GH.Print(string.format("  %s: %s, next in %ds", GH.TargetLabel(t), t.enabled and "on" or "off", left))
     end
   else
-    if GH.ToggleConfig then GH.ToggleConfig() end
+    if GH.ToggleConfig then GH.ToggleConfig()
+    else GH.Print("|cffff4040The settings window is not available (UI failed to load).|r") end
   end
   if GH.UpdateUI then GH.UpdateUI() end
 end
