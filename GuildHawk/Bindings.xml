@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="GUILDHAWK_SEND" header="GUILDHAWK" category="ADDONS">
+    GuildHawk_SendNext()
+  </Binding>
+</Bindings>
