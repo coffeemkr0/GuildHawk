@@ -25,6 +25,8 @@ A World of Warcraft addon for WoW Forever (client 1.60.1) that times guild recru
 | `/gh send` | Open the preview for the next due post, or confirm it if already open |
 | `/gh status` | Show pool size and countdowns |
 
+A minimap button opens the config window when clicked. Drag it to move it around the minimap rim.
+
 A key binding is available under Key Bindings > AddOns > GuildHawk. Drag the Ready button with right-click to move it.
 
 Use sensible intervals. Spamming channels can get you muted or reported.

@@ -301,6 +301,66 @@ local function BuildConfig()
   sendNow:SetScript("OnClick", function() GH.SendNext() end)
 end
 
+---------------------------------------------------------------------------
+-- Minimap button (drag around the rim; click opens the config window)
+---------------------------------------------------------------------------
+local minimapBtn
+
+local function PlaceMinimapButton()
+  local a = math.rad(GH.db.minimapAngle or 200)
+  local r = (Minimap:GetWidth() / 2) + 5
+  minimapBtn:ClearAllPoints()
+  minimapBtn:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
+end
+
+local function BuildMinimapButton()
+  local b = CreateFrame("Button", "GuildHawkMinimapButton", Minimap)
+  minimapBtn = b
+  b:SetSize(31, 31)
+  b:SetFrameStrata("MEDIUM")
+  b:SetFrameLevel(8)
+  b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  b:RegisterForDrag("LeftButton")
+  b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+  local icon = b:CreateTexture(nil, "ARTWORK")
+  icon:SetTexture("Interface\\Icons\\INV_Misc_Horn_01")
+  icon:SetSize(20, 20)
+  icon:SetPoint("TOPLEFT", 7, -6)
+  icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
+
+  local border = b:CreateTexture(nil, "OVERLAY")
+  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  border:SetSize(53, 53)
+  border:SetPoint("TOPLEFT")
+
+  b:SetScript("OnClick", function() GH.ToggleConfig() end)
+
+  b:SetScript("OnDragStart", function(self)
+    self:SetScript("OnUpdate", function()
+      local mx, my = Minimap:GetCenter()
+      local px, py = GetCursorPosition()
+      local scale = Minimap:GetEffectiveScale()
+      px, py = px / scale, py / scale
+      local atan2 = math.atan2 or math.atan
+      GH.db.minimapAngle = math.deg(atan2(py - my, px - mx))
+      PlaceMinimapButton()
+    end)
+  end)
+  b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+
+  b:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+    GameTooltip:AddLine("GuildHawk")
+    GameTooltip:AddLine("Click: open settings", 1, 1, 1)
+    GameTooltip:AddLine("Drag: move this button", 1, 1, 1)
+    GameTooltip:Show()
+  end)
+  b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+  PlaceMinimapButton()
+end
+
 function GH.ToggleConfig()
   if not cfg then return end
   if cfg:IsShown() then cfg:Hide() else GH.RefreshConfig(); cfg:Show() end
@@ -310,6 +370,7 @@ function GH.BuildUI()
   BuildReady()
   BuildPrompt()
   BuildConfig()
+  BuildMinimapButton()
   GH.UpdateUI()
   GH.Print("Loaded. /gh to configure, /gh start to begin. Drag the button with right-click.")
 end

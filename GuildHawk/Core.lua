@@ -15,6 +15,7 @@ local defaults = {
   sequential = false,
   running = false,
   seqIndex = 0,
+  minimapAngle = 200,
   targets = {
     { kind = "CHANNEL", channel = "Trade", interval = 180, enabled = true, lastSent = 0 },
   },
