@@ -1,4 +1,4 @@
-## Interface: 11508
+## Interface: 16001
 ## Title: GuildHawk
 ## Notes: Guild recruitment timer. Timers mark posts as due; one click or keypress sends a randomly picked message.
 ## Author: You

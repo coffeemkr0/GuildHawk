@@ -14,7 +14,7 @@ A World of Warcraft addon for WoW Forever (client 1.60.1) that times guild recru
 
 ## Install
 1. Copy the `GuildHawk` folder into your Forever client's `Interface/AddOns/` folder (for example `_classic_era_` or `_classic_beta_`).
-2. In game run `/dump (select(4, GetBuildInfo()))` and put that number on the `## Interface:` line of `GuildHawk.toc` if it differs from the placeholder.
+2. In game run `/dump (select(4, GetBuildInfo()))` and put that number on the `## Interface:` line of `GuildHawk.toc` if it differs from `16001`.
 3. Join the channels you want to post in (Trade, for example), then run `/gh start`.
 
 ## Commands
