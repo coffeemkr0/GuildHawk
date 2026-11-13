@@ -196,35 +196,68 @@ function GH.ClampInterval(v)
   return v
 end
 
-function GH.IsDue(t, now)
-  return t.enabled and (now - (t.lastSent or 0)) >= t.interval
-end
-
--- Most overdue enabled target, or nil.
-function GH.NextDue()
-  local now = GetTime()
-  local best, bestOver
-  for _, t in ipairs(GH.db.targets) do
-    if GH.IsDue(t, now) then
-      local over = now - (t.lastSent or 0) - t.interval
-      if not bestOver or over > bestOver then best, bestOver = t, over end
-    end
-  end
-  return best
-end
-
 function GH.TargetLabel(t)
   if t.kind == "CHANNEL" then return t.channel end
   return t.kind:sub(1, 1) .. t.kind:sub(2):lower()
 end
 
+local function labelFor(targets)
+  local names = {}
+  for _, t in ipairs(targets) do names[#names + 1] = GH.TargetLabel(t) end
+  return table.concat(names, " + ")
+end
+
+-- Timer units. A target with no sync group is its own unit. Enabled targets that share a
+-- sync group form ONE unit: one timer, one message, one preview, posted to all of them.
+-- A unit is { targets, interval, lastSent, group, label }.
+function GH.Units()
+  local units, byGroup = {}, {}
+  for _, t in ipairs(GH.db.targets) do
+    if t.enabled then
+      if t.group then
+        local u = byGroup[t.group]
+        if not u then
+          u = { targets = {}, group = t.group, interval = t.interval, lastSent = 0 }
+          byGroup[t.group] = u
+          units[#units + 1] = u
+        end
+        u.targets[#u.targets + 1] = t
+        u.lastSent = math.max(u.lastSent, t.lastSent or 0)
+      else
+        units[#units + 1] = { targets = { t }, interval = t.interval, lastSent = t.lastSent or 0 }
+      end
+    end
+  end
+  for _, u in ipairs(units) do u.label = labelFor(u.targets) end
+  return units
+end
+
+-- Most overdue unit, or nil.
+function GH.NextDue()
+  local now = GetTime()
+  local best, bestOver
+  for _, u in ipairs(GH.Units()) do
+    local over = now - u.lastSent - u.interval
+    if over >= 0 and (not bestOver or over > bestOver) then best, bestOver = u, over end
+  end
+  return best
+end
+
+-- Find a message by id. Returns message, position.
+function GH.FindMessage(id)
+  for i, m in ipairs(GH.db.messages) do
+    if m.id == id then return m, i end
+  end
+end
+
 ---------------------------------------------------------------------------
 -- Preview prompt flow
---   Prompt  : a target is due -> pick a message and show the preview
+--   Prompt  : a timer is due -> pick a message and show the preview
 --   Next    : pick another random message (also marked as used)
---   Okay    : send it (runs from a click, so the protected send is allowed)
---   Skip    : drop this post and restart that channel's timer
---   Cancel  : stop the timer for this channel
+--   Okay    : send it to every channel in the unit (runs from a click, so the
+--             protected send is allowed)
+--   Skip    : drop this post and restart the timer
+--   Cancel  : stop the timer for this channel (or the whole sync group)
 --   CancelAll: stop every channel's timer
 ---------------------------------------------------------------------------
 GH.pending = nil
@@ -234,6 +267,11 @@ local function channelId(t)
   local id = GetChannelName(t.channel)
   if not id or id == 0 then return nil, false end
   return id, true
+end
+
+local function touch(targets)
+  local now = GetTime()
+  for _, t in ipairs(targets) do t.lastSent = now end
 end
 
 local function clearPending()
@@ -246,52 +284,72 @@ function GH.Prompt()
   if GH.pending then if GH.ShowPrompt then GH.ShowPrompt() end return end
   if not GH.db.running then return end
   if UnitIsDeadOrGhost("player") or InCombatLockdown() then return end
-  local t = GH.NextDue()
-  if not t then return end
+  local u = GH.NextDue()
+  if not u then return end
   if GH.EnabledCount() == 0 then return end
-  local _, ok = channelId(t)
-  if not ok then
-    GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Skipping it for this cycle.")
-    t.lastSent = GetTime()
-    return
+
+  -- Only offer channels you are actually in; warn about the rest.
+  local reachable = {}
+  for _, t in ipairs(u.targets) do
+    local _, ok = channelId(t)
+    if ok then reachable[#reachable + 1] = t
+    else GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Skipping it for this cycle.") end
   end
-  GH.pending = { target = t, msg = GH.PickMessage() }
+  if #reachable == 0 then touch(u.targets); return end
+  u.targets, u.label = reachable, labelFor(reachable)
+
+  local text, id = GH.PickMessage()
+  if not text then return end
+  GH.pending = { unit = u, msg = text, id = id }
   if GH.ShowPrompt then GH.ShowPrompt() end
   if GH.UpdateUI then GH.UpdateUI() end
 end
 
 function GH.Next()
   if not GH.pending then return end
-  GH.pending.msg = GH.PickMessage() or GH.pending.msg
+  local text, id = GH.PickMessage()
+  if text then GH.pending.msg, GH.pending.id = text, id end
   if GH.ShowPrompt then GH.ShowPrompt() end
+end
+
+-- Favorite or un-favorite the message shown in the preview.
+function GH.SetPendingFavorite(on)
+  local p = GH.pending
+  if not p then return end
+  local m = GH.FindMessage(p.id)
+  if m then m.fav = on and true or false end
+  if GH.RefreshConfig then GH.RefreshConfig() end
 end
 
 function GH.Approve()
   local p = GH.pending
   if not p then return end
-  local t = p.target
-  local id, ok = channelId(t)
-  if not ok then
-    GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Post dropped.")
-  else
-    SendChatMessage(p.msg, t.kind, nil, id)
+  for _, t in ipairs(p.unit.targets) do
+    if t.enabled then
+      local id, ok = channelId(t)
+      if ok then
+        SendChatMessage(p.msg, t.kind, nil, id)
+      else
+        GH.Print("You are not in channel '" .. tostring(t.channel) .. "'. Post dropped.")
+      end
+    end
   end
-  t.lastSent = GetTime()
+  touch(p.unit.targets)
   clearPending()
 end
 
 function GH.Skip()
   local p = GH.pending
   if not p then return end
-  p.target.lastSent = GetTime()
+  touch(p.unit.targets)
   clearPending()
 end
 
 function GH.CancelTarget()
   local p = GH.pending
   if not p then return end
-  p.target.enabled = false
-  GH.Print("Stopped the timer for " .. GH.TargetLabel(p.target) .. ".")
+  for _, t in ipairs(p.unit.targets) do t.enabled = false end
+  GH.Print("Stopped the timer for " .. p.unit.label .. ".")
   clearPending()
 end
 
@@ -358,7 +416,7 @@ SlashCmdList["GUILDHAWK"] = function(arg)
     local now = GetTime()
     for _, t in ipairs(GH.db.targets) do
       local left = math.max(0, t.interval - (now - (t.lastSent or 0)))
-      GH.Print(string.format("  %s: %s, next in %ds", GH.TargetLabel(t), t.enabled and "on" or "off", left))
+      GH.Print(string.format("  %s%s: %s, next in %ds", GH.TargetLabel(t), t.group and (" [sync " .. t.group .. "]") or "", t.enabled and "on" or "off", left))
     end
   else
     if GH.ToggleConfig then GH.ToggleConfig()

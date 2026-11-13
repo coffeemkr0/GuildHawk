@@ -3,6 +3,7 @@ local GH = GuildHawk
 
 local ready, cfg
 local KINDS = { "CHANNEL", "SAY", "YELL" }
+local GROUPS = { "-", "A", "B", "C", "D" } -- sync groups; "-" means its own timer
 
 local function backdrop(frame)
   frame:SetBackdrop({
@@ -60,21 +61,19 @@ function GH.UpdateUI()
     return
   end
   if GH.pending then
-    ready:SetText("Review post: " .. GH.TargetLabel(GH.pending.target))
+    ready:SetText("Review post: " .. GH.pending.unit.label)
     ready:SetAlpha(1)
     return
   end
-  local t = GH.NextDue()
-  if t then
-    ready:SetText("Review " .. GH.TargetLabel(t))
+  local due = GH.NextDue()
+  if due then
+    ready:SetText("Review " .. due.label)
     ready:SetAlpha(1)
   else
     local now, soon = GetTime(), nil
-    for _, tt in ipairs(GH.db.targets) do
-      if tt.enabled then
-        local left = tt.interval - (now - (tt.lastSent or 0))
-        if not soon or left < soon then soon = left end
-      end
+    for _, un in ipairs(GH.Units()) do
+      local left = un.interval - (now - un.lastSent)
+      if not soon or left < soon then soon = left end
     end
     ready:SetText(soon and string.format("Next in %d:%02d", soon / 60, soon % 60) or "No targets")
     ready:SetAlpha(0.6)
@@ -89,7 +88,7 @@ local prompt
 
 local function BuildPrompt()
   prompt = CreateFrame("Frame", "GuildHawkPrompt", UIParent, "BackdropTemplate")
-  prompt:SetSize(420, 170)
+  prompt:SetSize(420, 196)
   prompt:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
   prompt:SetFrameStrata("DIALOG")
   prompt:SetMovable(true)
@@ -109,6 +108,14 @@ local function BuildPrompt()
   prompt.msg:SetJustifyH("LEFT")
   prompt.msg:SetJustifyV("TOP")
   prompt.msg:SetHeight(70)
+
+  prompt.fav = CreateFrame("CheckButton", nil, prompt, "UICheckButtonTemplate")
+  prompt.fav:SetSize(24, 24)
+  prompt.fav:SetPoint("BOTTOMLEFT", 14, 46)
+  local favLabel = prompt:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  favLabel:SetPoint("LEFT", prompt.fav, "RIGHT", 2, 0)
+  favLabel:SetText("Favorite this message")
+  prompt.fav:SetScript("OnClick", function(self) GH.SetPendingFavorite(self:GetChecked()) end)
 
   local defs = {
     { "Next",       function() GH.Next() end },
@@ -131,8 +138,10 @@ end
 function GH.ShowPrompt()
   local p = GH.pending
   if not p or not prompt then return end
-  prompt.title:SetText("Post to " .. GH.TargetLabel(p.target) .. "?")
+  prompt.title:SetText("Post to " .. p.unit.label .. "?")
   prompt.msg:SetText(p.msg)
+  local m = GH.FindMessage(p.id)
+  prompt.fav:SetChecked(m and m.fav or false)
   prompt:Show()
 end
 
@@ -170,9 +179,19 @@ local function makeChannelRow(i)
   r.kind = flatButton(r, 70, 22, "")
   r.kind:SetPoint("LEFT", r.enable, "RIGHT", 4, 0)
 
+  r.group = flatButton(r, 36, 22, "-")
+  r.group:SetPoint("LEFT", r.kind, "RIGHT", 6, 0)
+  r.group:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText("Sync group", 1, 1, 1)
+    GameTooltip:AddLine("Channels in the same group (A-D) share ONE timer and post the same message together. \"-\" = its own timer.", nil, nil, nil, true)
+    GameTooltip:Show()
+  end)
+  r.group:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
   r.channel = CreateFrame("EditBox", nil, r, "InputBoxTemplate")
   r.channel:SetSize(130, 20)
-  r.channel:SetPoint("LEFT", r.kind, "RIGHT", 12, 0)
+  r.channel:SetPoint("LEFT", r.group, "RIGHT", 12, 0)
   r.channel:SetAutoFocus(false)
 
   r.interval = CreateFrame("EditBox", nil, r, "InputBoxTemplate")
@@ -195,11 +214,30 @@ local function makeChannelRow(i)
     r.target.kind = k
     GH.RefreshConfig()
   end)
+  r.group:SetScript("OnClick", function()
+    local t = r.target
+    local cur = t.group or "-"
+    local nxt = GROUPS[1]
+    for n, g in ipairs(GROUPS) do if g == cur then nxt = GROUPS[n % #GROUPS + 1]; break end end
+    t.group = (nxt ~= "-") and nxt or nil
+    if t.group then -- adopt the interval and timing of the group's existing members
+      for _, o in ipairs(GH.db.targets) do
+        if o ~= t and o.group == t.group then t.interval, t.lastSent = o.interval, o.lastSent; break end
+      end
+    end
+    GH.RefreshConfig()
+    GH.UpdateUI()
+  end)
   r.channel:SetScript("OnEnterPressed", function(self) r.target.channel = self:GetText(); self:ClearFocus() end)
   r.channel:SetScript("OnEditFocusLost", function(self) r.target.channel = self:GetText() end)
   local function commitInterval(self)
-    r.target.interval = GH.ClampInterval(self:GetText())
-    self:SetText(r.target.interval)
+    local t = r.target
+    t.interval = GH.ClampInterval(self:GetText())
+    self:SetText(t.interval)
+    if t.group then -- one timer per group: keep every member on the same interval
+      for _, o in ipairs(GH.db.targets) do if o.group == t.group then o.interval = t.interval end end
+      GH.RefreshConfig()
+    end
   end
   r.interval:SetScript("OnEnterPressed", function(self) commitInterval(self); self:ClearFocus() end)
   r.interval:SetScript("OnEditFocusLost", commitInterval)
@@ -221,6 +259,7 @@ local function RefreshChannels()
     r:Show()
     r.enable:SetChecked(t.enabled)
     r.kind:SetText(t.kind)
+    r.group:SetText(t.group or "-")
     if not r.channel:HasFocus() then r.channel:SetText(t.channel or "") end
     if t.kind == "CHANNEL" then r.channel:Show() else r.channel:Hide() end
     if not r.interval:HasFocus() then r.interval:SetText(t.interval) end
@@ -247,7 +286,13 @@ local function BuildChannelsPanel()
 
   local th = chanPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   th:SetPoint("TOPLEFT", 6, -42)
-  th:SetText("Channels:  on / type / channel name / interval (minimum 60 seconds)")
+  th:SetText("Channels:  on / type / sync group / channel name / interval (minimum 60 seconds)")
+
+  local hint = chanPanel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+  hint:SetPoint("TOPLEFT", 6, -62 - 8 * 26 - 8)
+  hint:SetWidth(500)
+  hint:SetJustifyH("LEFT")
+  hint:SetText("Sync groups: give two or more channels the same letter (A-D) and they share one timer. When it is due you get one preview, and Okay posts that same message to every channel in the group. Channels left on \"-\" keep their own timers.")
 
   local add = flatButton(chanPanel, 110, 22, "Add channel")
   add:SetPoint("BOTTOMLEFT", 6, 6)
