@@ -20,13 +20,23 @@ end
 local function BuildReady()
   ready = CreateFrame("Button", "GuildHawkReadyButton", UIParent, "UIPanelButtonTemplate")
   ready:SetSize(190, 32)
-  ready:SetPoint("CENTER", UIParent, "CENTER", 0, -200)
+  local pos = GH.db.readyPos
+  if pos then
+    ready:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4])
+  else
+    ready:SetPoint("CENTER", UIParent, "CENTER", 0, -200)
+  end
   ready:SetMovable(true)
+  ready:SetClampedToScreen(true)
   ready:EnableMouse(true)
   ready:RegisterForClicks("LeftButtonUp")
-  ready:RegisterForDrag("RightButton")
+  ready:RegisterForDrag("LeftButton", "RightButton")
   ready:SetScript("OnDragStart", function(self) self:StartMoving() end)
-  ready:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+  ready:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local point, _, relPoint, x, y = self:GetPoint()
+    GH.db.readyPos = { point, relPoint, x, y }
+  end)
   ready:SetScript("OnClick", function() GH.Prompt() end)
   ready:SetText("Guild Hawk")
 
@@ -378,5 +388,5 @@ function GH.BuildUI()
     if not ok then GH.Print("|cffff4040" .. s[1] .. " failed:|r " .. tostring(err)) end
   end
   pcall(GH.UpdateUI)
-  GH.Print("Loaded. /gh to configure, /gh start to begin. Drag the button with right-click.")
+  GH.Print("Loaded. /gh to configure, /gh start to begin. Drag the countdown button to move it.")
 end
