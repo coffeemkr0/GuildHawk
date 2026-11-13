@@ -173,7 +173,7 @@ end
 ---------------------------------------------------------------------------
 local ROWS, ROW_H = 12, 24
 local msgRows, chanRows = {}, {}
-local msgPanel, chanPanel, importFrame
+local msgPanel, chanPanel, importFrame, exportFrame
 local tabButtons = {}
 local listOffset, editIndex, refreshing = 0, nil, false
 local search, favOnly = "", false
@@ -523,6 +523,73 @@ local function BuildImportFrame()
   cancel:SetScript("OnClick", function() importFrame:Hide() end)
 end
 
+-- WoW addons cannot write to the clipboard directly, so show every message in a box with the
+-- text pre-selected: press Ctrl+C to copy, then close it.
+local function BuildExportFrame()
+  exportFrame = CreateFrame("Frame", "GuildHawkExport", UIParent, "BackdropTemplate")
+  exportFrame:SetSize(480, 340)
+  exportFrame:SetPoint("CENTER")
+  exportFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+  exportFrame:SetMovable(true)
+  exportFrame:EnableMouse(true)
+  exportFrame:RegisterForDrag("LeftButton")
+  exportFrame:SetScript("OnDragStart", exportFrame.StartMoving)
+  exportFrame:SetScript("OnDragStop", exportFrame.StopMovingOrSizing)
+  backdrop(exportFrame)
+  exportFrame:Hide()
+  tinsert(UISpecialFrames, "GuildHawkExport")
+
+  local title = exportFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+  title:SetPoint("TOP", 0, -14)
+  title:SetText("Copy all messages")
+
+  local hint = exportFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  hint:SetPoint("TOPLEFT", 20, -40)
+  hint:SetWidth(440)
+  hint:SetJustifyH("LEFT")
+  exportFrame.hint = hint
+
+  local scroll = CreateFrame("ScrollFrame", "GuildHawkExportScroll", exportFrame, "UIPanelScrollFrameTemplate")
+  scroll:SetPoint("TOPLEFT", 20, -78)
+  scroll:SetSize(410, 200)
+  local box = CreateFrame("EditBox", nil, scroll)
+  box:SetMultiLine(true)
+  box:SetAutoFocus(false)
+  box:SetFontObject(ChatFontNormal)
+  box:SetWidth(400)
+  box:SetMaxLetters(0)
+  scroll:SetScrollChild(box)
+  exportFrame.box = box
+
+  local text = ""
+  -- the box is for copying only: undo any typing and keep everything selected
+  box:SetScript("OnTextChanged", function(self, user)
+    if user then self:SetText(text); self:HighlightText() end
+  end)
+  box:SetScript("OnEscapePressed", function() exportFrame:Hide() end)
+  box:SetScript("OnKeyDown", function(_, key)
+    if IsControlKeyDown() and (key == "C" or key == "X") then
+      GH.Print("Copied. You can now paste the messages anywhere.")
+      if C_Timer and C_Timer.After then C_Timer.After(0.2, function() exportFrame:Hide() end) end
+    end
+  end)
+
+  function exportFrame.Open()
+    local lines = {}
+    for _, m in ipairs(GH.db.messages) do lines[#lines + 1] = m.text end
+    text = table.concat(lines, "\n")
+    exportFrame.hint:SetText(string.format("%d messages, one per line. They are selected below: press Ctrl+C to copy, then paste them where you want. (The same format works with Bulk import.)", #lines))
+    box:SetText(text)
+    exportFrame:Show()
+    box:SetFocus()
+    box:HighlightText()
+  end
+
+  local close = flatButton(exportFrame, 100, 24, "Close")
+  close:SetPoint("BOTTOM", 0, 16)
+  close:SetScript("OnClick", function() exportFrame:Hide() end)
+end
+
 local function BuildMessagesPanel()
   msgPanel = CreateFrame("Frame", nil, cfg)
   msgPanel:SetPoint("TOPLEFT", 14, -66)
@@ -656,6 +723,13 @@ local function BuildMessagesPanel()
     RefreshMessages()
   end)
 
+  local copyAll = flatButton(msgPanel, 110, 22, "Copy all...")
+  copyAll:SetPoint("LEFT", addNew, "RIGHT", 6, 0)
+  copyAll:SetScript("OnClick", function()
+    if #GH.db.messages == 0 then GH.Print("There are no messages to copy."); return end
+    exportFrame.Open()
+  end)
+
   local clearAll = flatButton(msgPanel, 100, 22, "Clear list")
   clearAll:SetPoint("TOPRIGHT", -6, ey - 86)
   local confirm = false
@@ -723,6 +797,7 @@ local function BuildConfig()
   end
 
   BuildImportFrame()
+  BuildExportFrame()
   BuildMessagesPanel()
   BuildChannelsPanel()
   cfg:SetScript("OnShow", function() ShowTab(GH.cfgTab or 1) end)
